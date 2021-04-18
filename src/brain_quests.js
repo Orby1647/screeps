@@ -1,10 +1,12 @@
 'use strict';
 
-brain.handleQuests = function(transaction) {
+brain.handleQuests = function() {
   Memory.quests = Memory.quests || {};
+  if (Object.keys(Memory.quests).length > 0) {
+    brain.debugLog('brain', `brain.handleQuests quests: ${Object.keys(Memory.quests).length}`);
+  }
   for (const id of Object.keys(Memory.quests)) {
     const quest = Memory.quests[id];
-    console.log(JSON.stringify(quest), quest.end - Game.time);
 
     if (!quest.checked && quest.check < Game.time) {
       Memory.quests[id].checked = true;
@@ -12,7 +14,6 @@ brain.handleQuests = function(transaction) {
     }
 
     if (quest.end < Game.time) {
-      console.log('Quest is over: ' + JSON.stringify(quest));
       delete Memory.quests[id];
     }
   }
@@ -50,22 +51,22 @@ brain.getQuestFromTransactionDescription = function(description) {
   try {
     data = JSON.parse(description);
   } catch (e) {
-    console.log('Quest transaction: Can not parse');
+    brain.debugLog('quests', 'Quest transaction: Can not parse');
     return false;
   }
   if (data === null) {
-    console.log('Quest transaction: No type');
+    brain.debugLog('quests', 'Quest transaction: No type');
     return false;
   }
   console.log(data);
   for (const key of ['type', 'room', 'id']) {
     if (!data[key]) {
-      console.log(`Incoming transaction no Quest: No ${key}`);
+      brain.debugLog('quests', `Incoming transaction no Quest: No ${key}`);
       return false;
     }
   }
   if (data.type !== 'Quest') {
-    console.log('Quest transaction: Type not quest');
+    brain.debugLog('quests', 'Quest transaction: Type not quest');
     return false;
   }
   return data;
@@ -77,7 +78,7 @@ brain.checkQuestForAcceptance = function(transaction) {
   if (!data) {
     return false;
   }
-  console.log('Yeah', JSON.stringify(data), JSON.stringify(transaction));
+  console.log(`Found quest acceptance on transaction`);
   const quest = brain.getQuest(transaction, data);
 
   Memory.quests[data.id] = quest;

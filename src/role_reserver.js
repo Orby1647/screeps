@@ -17,31 +17,33 @@ roles.reserver.settings = {
   maxLayoutAmount: 1,
 };
 roles.reserver.updateSettings = function(room, creep) {
-  const level = creep.level ? creep.level : 1;
-  if (level === 2) {
-    return {
-      amount: [2, 2],
-    };
+  room.debugLog('reserver', `role_reserver.updateSettings; targetRoom: ${creep.routing.targetRoom}`);
+  const targetRoom = Game.rooms[creep.routing.targetRoom];
+  if (targetRoom) {
+    const reservation = targetRoom.controller.reservation;
+    if (reservation) {
+      const maxReserveTicks = CONTROLLER_RESERVE_MAX - reservation.ticksToEnd;
+      // E.g. ticksToEnd: 3300, RESERVE_MAX: 5000, LIFE_TIME 500
+      // maxReserveTicks = 1700
+      // maxClaimParts = 4 (1 to keep up the ticking + 3 to increase the ticksToEnd)
+      const maxClaimParts = Math.ceil(maxReserveTicks / CREEP_CLAIM_LIFE_TIME);
+      room.debugLog('reserver', `role_reserver.updateSettings - maxReserveTicks: ${maxReserveTicks} life_time: ${CREEP_CLAIM_LIFE_TIME} maxClaimParts: ${maxClaimParts}`);
+      return {
+        maxLayoutAmount: maxClaimParts,
+      };
+    }
   }
-  if (level === 5) {
-    room.log('Build super reserver');
-    return {
-      amount: [5, 5],
-    };
-  }
-};
-
-roles.reserver.preMove = function(creep, directions) {
-  if (creep.allowOverTake(directions)) {
-    return true;
-  }
+  room.debugLog('reserver', `role_reserver.updateSettings - Can not access targetRoom`);
+  return {
+    maxLayoutAmount: 1,
+  };
 };
 
 roles.reserver.action = function(creep) {
   creep.mySignController();
   if (!creep.memory.routing.targetId) {
     // TODO check when this happens and fix it
-    creep.log('creep_reserver.action No targetId !!!!!!!!!!!' + JSON.stringify(creep.memory));
+    creep.log('creep_reserver.action No targetId !!!!!!!!!!!');
     if (creep.room.name === creep.memory.routing.targetRoom) {
       creep.memory.routing.targetId = creep.room.controller.id;
     }
@@ -52,8 +54,4 @@ roles.reserver.action = function(creep) {
 
   creep.handleReserver();
   return true;
-};
-
-roles.reserver.execute = function(creep) {
-  creep.log('Execute!!!');
 };

@@ -18,7 +18,7 @@ roles.powerdefender.action = function(creep) {
   if (creep.hits < 200) {
     return false;
   }
-  const hostileCreeps = creep.room.getEnemys();
+  const hostileCreeps = creep.room.findEnemys();
   if (hostileCreeps.length > 0) {
     creep.moveTo(hostileCreeps[0]);
     creep.rangedAttack(hostileCreeps[0]);
@@ -45,8 +45,4 @@ roles.powerdefender.action = function(creep) {
   creep.moveTo(powerBank[0]);
   creep.rangedAttack(powerBank[0]);
   return true;
-};
-
-roles.powerdefender.execute = function(creep) {
-  creep.log('Execute!!!');
 };

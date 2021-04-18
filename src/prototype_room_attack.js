@@ -1,5 +1,7 @@
 'use strict';
 
+const {findMyRoomsSortByDistance} = require('./helper_findMyRooms');
+
 /**
  * Attack42 is called so because 42 is the only true answer :-).
  *
@@ -14,28 +16,16 @@
  *
  */
 Room.prototype.attack42 = function(roomName, spawn) {
-  spawn = spawn || [{
-    creep: 1,
-    role: 'autoattackmelee',
-  }, {
-    creep: 1,
-    role: 'defender',
-  }, {
-    creep: 1,
-    role: 'squadheal',
-  },
-  {
-    creep: 2,
-    role: 'autoattackmelee',
-  }, {
-    creep: 2,
-    role: 'defender',
-  }, {
-    creep: 2,
-    role: 'squadheal',
-  },
-  ];
-
+  if (!spawn) {
+    spawn = [
+      {creep: 1, role: 'autoattackmelee'},
+      {creep: 1, role: 'defender'},
+      {creep: 1, role: 'squadheal'},
+      {creep: 2, role: 'autoattackmelee'},
+      {creep: 2, role: 'defender'},
+      {creep: 2, role: 'squadheal'},
+    ];
+  }
   const closestSpawn = this.closestSpawn(roomName);
   if (closestSpawn && closestSpawn.id) {
     brain.startMeleeSquad(closestSpawn.room, roomName);
@@ -43,11 +33,7 @@ Room.prototype.attack42 = function(roomName, spawn) {
 };
 
 const getClosestRoom = function(roomName) {
-  const sortByDistance = function(object) {
-    return Game.map.getRoomLinearDistance(roomName, object);
-  };
-
-  const roomsMy = _.sortBy(Memory.myRooms, sortByDistance);
+  const roomsMy = findMyRoomsSortByDistance(roomName);
   return Game.rooms[roomsMy[0]];
 };
 
@@ -109,10 +95,11 @@ Room.prototype.getOwnerName = function() {
 
 Room.prototype.launchAutoAttack = function(player) {
   if (!player.lastAttacked) {
-    player.lastAttacked = Game.time;
+    player.lastAttacked = Game.time + config.autoattack.timeBetweenAttacks;
     Memory.players[player.name] = player;
   }
   if (Game.time < player.lastAttacked + config.autoattack.timeBetweenAttacks) {
+    this.debugLog('attack', `Too early to attack`);
     return false;
   }
   this.log(`Queuing level ${player.level} attack`);
@@ -130,15 +117,18 @@ Room.prototype.launchAutoAttack = function(player) {
 
 Room.prototype.attackRoom = function() {
   if (config.autoattack.disabled) {
+    console.log('autoattack disabled');
     return true;
   }
   const name = this.getOwnerName();
   if (!name) {
+    this.debugLog('attack', 'no owner name');
     return;
   }
 
   // We only exclude players in the friends.js
   if (friends.indexOf(name) > -1) {
+    this.debugLog('attack', `Within friends: ${name}`);
     return true;
   }
 
@@ -146,7 +136,7 @@ Room.prototype.attackRoom = function() {
 
   addRoom(player, this);
 
-  if (player.level < attacks.length) {
+  if (player.level < Object.keys(attacks).length) {
     this.launchAutoAttack(player);
   }
   return true;

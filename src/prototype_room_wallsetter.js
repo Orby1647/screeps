@@ -1,7 +1,7 @@
 'use strict';
 
 Room.prototype.buildBlockers = function() {
-  //   this.log('buildBlockers: ' + this.memory.controllerLevel.buildBlockersInterval);
+  this.debugLog('baseBuilding', 'buildBlockers: ' + this.memory.controllerLevel.buildBlockersInterval);
 
   const spawns = this.findPropertyFilter(FIND_MY_STRUCTURES, 'structureType', [STRUCTURE_SPAWN]);
   if (spawns.length === 0) {
@@ -43,7 +43,7 @@ Room.prototype.checkExitsAreReachable = function() {
 
   const exits = this.find(FIND_EXIT);
   const room = this;
-  const callbackNew = function(roomName) {
+  const callbackNew = function() {
     const costMatrix = room.getMemoryCostMatrix();
     return costMatrix;
   };
@@ -58,7 +58,7 @@ Room.prototype.checkExitsAreReachable = function() {
       targets, {
         roomCallback: callbackNew,
         maxRooms: 1,
-      }
+      },
     );
 
     if (search.incomplete) {
@@ -66,7 +66,7 @@ Room.prototype.checkExitsAreReachable = function() {
         exit,
         targets, {
           maxRooms: 1,
-        }
+        },
       );
       for (const pathPos of search.path) {
         if (inLayer(this, pathPos)) {
@@ -79,25 +79,21 @@ Room.prototype.checkExitsAreReachable = function() {
   }
 };
 
-Room.prototype.closeExitsByPath = function() {
-  const inLayer = function(room, pos) {
-    for (let i = 0; i < room.memory.walls.layer_i; i++) {
-      for (const j of Object.keys(room.memory.walls.layer[i])) {
-        const position = room.memory.walls.layer[i][j];
-        if (pos.isEqualTo(position.x, position.y)) {
-          return true;
-        }
+const inLayer = function(room, pos) {
+  for (let i = 0; i < room.memory.walls.layer_i; i++) {
+    for (const j of Object.keys(room.memory.walls.layer[i])) {
+      const position = room.memory.walls.layer[i][j];
+      if (pos.isEqualTo(position.x, position.y)) {
+        return true;
       }
     }
-    return false;
-  };
-
-  if (this.memory.walls && this.memory.walls.finished) {
-    return false;
   }
+  return false;
+};
 
+Room.prototype.initMemoryWalls = function() {
   if (!this.memory.walls || !this.memory.walls.layer) {
-    this.log('closeExitsByPath: Reset walls');
+    this.debugLog('baseBuilding', 'closeExitsByPath: Reset walls');
     this.memory.walls = {
       exit_i: 0,
       ramparts: [],
@@ -111,32 +107,10 @@ Room.prototype.closeExitsByPath = function() {
   if (!this.memory.walls.layer[this.memory.walls.layer_i]) {
     this.memory.walls.layer[this.memory.walls.layer_i] = [];
   }
-  // this.log('closeExitsByPath layer: ' + this.memory.walls.layer_i + ' exit: ' + this.memory.walls.exit_i + ' walls: ' + this.memory.walls.layer[this.memory.walls.layer_i].length);
+};
 
-  let ignores = [];
-  for (let i = 0; i < this.memory.walls.layer_i; i++) {
-    ignores = ignores.concat(this.memory.walls.layer[i]);
-  }
-
-  const exits = this.find(FIND_EXIT);
-  if (this.memory.walls.exit_i >= exits.length) {
-    this.memory.walls.exit_i = 0;
-    this.memory.walls.layer_i++;
-    this.log('Increase layer');
-    if (this.memory.walls.layer_i >= config.layout.wallThickness) {
-      this.log('Wall setup finished');
-      this.memory.walls.finished = true;
-
-      // TODO disabled, too many ramparts
-      //       this.checkExitsAreReachable();
-
-      return false;
-    }
-    return true;
-  }
-
-  const room = this;
-  const callbackNew = function(roomName, costMatrix) {
+const callbackcloseExitsByPath = function(room) {
+  return (roomName, costMatrix) => {
     if (!costMatrix) {
       costMatrix = new PathFinder.CostMatrix();
     }
@@ -151,27 +125,56 @@ Room.prototype.closeExitsByPath = function() {
 
     return costMatrix;
   };
+};
 
-  const exit = exits[this.memory.walls.exit_i];
-
+const getTargets = function(room) {
   const targets = [{
-    pos: this.controller.pos,
+    pos: room.controller.pos,
     range: 1,
   }];
-  const sources = this.find(FIND_SOURCES);
+  const sources = room.findSources();
   for (const sourceId of Object.keys(sources)) {
     targets.push({
       pos: sources[sourceId].pos,
       range: 1,
     });
   }
+  return targets;
+};
 
+Room.prototype.closeExitsByPath = function() {
+  if (this.memory.walls && this.memory.walls.finished) {
+    return false;
+  }
+
+  this.initMemoryWalls();
+
+  const exits = this.find(FIND_EXIT);
+  if (this.memory.walls.exit_i >= exits.length) {
+    this.memory.walls.exit_i = 0;
+    this.memory.walls.layer_i++;
+    if (config.debug.baseBuilding) {
+      this.log('Increase layer');
+    }
+    if (this.memory.walls.layer_i >= config.layout.wallThickness) {
+      if (config.debug.baseBuilding) {
+        this.log('Wall setup finished');
+      }
+      this.memory.walls.finished = true;
+
+      return false;
+    }
+    return true;
+  }
+
+  const exit = exits[this.memory.walls.exit_i];
+  const targets = getTargets(this);
   const search = PathFinder.search(
     exit,
     targets, {
-      roomCallback: callbackNew,
+      roomCallback: callbackcloseExitsByPath(this),
       maxRooms: 1,
-    }
+    },
   );
 
   if (search.incomplete) {
@@ -219,7 +222,7 @@ Room.prototype.closeExitsByPath = function() {
         this.memory.walls.ramparts.push(pathPos);
       } else if (pathPos.inPositions()) {
         structure = STRUCTURE_RAMPART;
-        this.log('pathPos in Positions: ' + pathPos);
+        this.debugLog('baseBuilding', 'closeExitsByPath: pathPos in Positions: ' + pathPos);
         this.memory.walls.ramparts.push(pathPos);
       } else {
         costMatrixBase.set(pathPos.x, pathPos.y, 0xff);
@@ -233,7 +236,6 @@ Room.prototype.closeExitsByPath = function() {
       if (returnCode === ERR_INVALID_TARGET) {
         return false;
       }
-      this.log('Placing ' + structure + ' with ' + returnCode + ' at ' + JSON.stringify(pathPos));
       return true;
     }
   }

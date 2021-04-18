@@ -9,7 +9,9 @@
 roles.defendranged = {};
 
 roles.defendranged.settings = {
-  layoutString: 'MR',
+  layoutString: 'RM',
+  amount: [1, 1],
+  maxLayoutAmount: 20,
   fillTough: true,
 };
 
@@ -17,7 +19,7 @@ roles.defendranged.settings = {
 // module.exports.action = function(creep) {
 //  creep.memory.countdown = creep.memory.countdown || 100;
 //
-//  let hostiles = creep.room.getEnemys();
+//  let hostiles = creep.room.findEnemys();
 //  if (hostiles.length === 0) {
 //    if (recycleCreep(creep)) {
 //      return true;
@@ -41,8 +43,7 @@ roles.defendranged.settings = {
 //  creep.say('fightRanged');
 //  return creep.fightRanged(target);
 // };
-
-roles.defendranged.execute = function(creep) {
+const action = function(creep) {
   creep.memory.countdown = creep.memory.countdown || 100;
 
   const recycleCreep = function(creep) {
@@ -55,15 +56,10 @@ roles.defendranged.execute = function(creep) {
         return false;
       }
     }
-    if (creep.room.name !== creep.memory.base) {
-      if (creep.stayInRoom()) {
-        return true;
-      }
-    }
     return Creep.recycleCreep(creep);
   };
 
-  let hostiles = creep.room.getEnemys();
+  let hostiles = creep.room.findEnemys();
   if (hostiles.length === 0) {
     if (recycleCreep(creep)) {
       return true;
@@ -87,3 +83,5 @@ roles.defendranged.execute = function(creep) {
   creep.say('fightRanged');
   return creep.fightRanged(target);
 };
+
+roles.defendranged.action = action;

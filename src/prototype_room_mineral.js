@@ -1,10 +1,16 @@
 'use strict';
 
-Room.prototype.isMineralInStorage = function() {
-  if (!this.storage) {
-    return false;
-  }
-  return Object.keys(this.storage.store).some((resource) => resource !== RESOURCE_ENERGY && resource !== RESOURCE_POWER);
+const {findMyRoomsSortByDistance} = require('./helper_findMyRooms');
+
+Room.prototype.getResourceAmountWithNextTiers = function(resource) {
+  const resultOH = REACTIONS[RESOURCE_HYDROXIDE][resource];
+  const resultXOH = REACTIONS[RESOURCE_CATALYST][resultOH];
+  const resultX = REACTIONS[RESOURCE_CATALYST][resource];
+  let amount = this.terminal.store[resource] || 0;
+  amount += this.terminal.store[resultOH] || 0;
+  amount += this.terminal.store[resultXOH] || 0;
+  amount += this.terminal.store[resultX] || 0;
+  return amount;
 };
 
 Room.prototype.getNextReaction = function() {
@@ -17,19 +23,14 @@ Room.prototype.getNextReaction = function() {
         continue;
       }
       const result = REACTIONS[mineralFirst][mineralSecond];
-      const resultOH = REACTIONS[RESOURCE_HYDROXIDE][result];
-      const resultXOH = REACTIONS[RESOURCE_CATALYST][resultOH];
-      const resultX = REACTIONS[RESOURCE_CATALYST][result];
-      let amount = this.terminal.store[result];
-      amount += this.terminal.store[resultOH] || 0;
-      amount += this.terminal.store[resultXOH] || 0;
-      amount += this.terminal.store[resultX] || 0;
-      if (amount > config.mineral.minAmount) {
+      const amount = this.getResourceAmountWithNextTiers(result);
+      if (amount > config.mineral.minAmount && this.terminal.store[result] > config.mineral.minAmount) {
         continue;
       }
       if (config.debug.mineral) {
         this.log('Could build: ' + mineralFirst + ' ' + mineralSecond + ' ' + result, amount);
       }
+      delete this.memory.cleanup;
       return {
         result: result,
         first: mineralFirst,
@@ -47,7 +48,7 @@ Room.prototype.reactions = function() {
       return;
     }
 
-    const labsAll = this.findPropertyFilter(FIND_MY_STRUCTURES, 'structureType', [STRUCTURE_LAB], false, {
+    const labsAll = this.findPropertyFilter(FIND_MY_STRUCTURES, 'structureType', [STRUCTURE_LAB], {
       filter: (object) => !object.mineralType || object.mineralType === result.result,
     });
 
@@ -70,7 +71,7 @@ Room.prototype.reactions = function() {
     };
 
     for (lab of labsAll) {
-      const labsNear = lab.pos.findInRangePropertyFilter(FIND_MY_STRUCTURES, 2, 'structureType', [STRUCTURE_LAB], false, {
+      const labsNear = lab.pos.findInRangePropertyFilter(FIND_MY_STRUCTURES, 2, 'structureType', [STRUCTURE_LAB], {
         filter: getNearLabs,
       });
 
@@ -108,14 +109,25 @@ Room.prototype.reactions = function() {
     //    this.log('Setting reaction: ' + JSON.stringify(this.memory.reaction));
   }
 
-  if (this.terminal.store[this.memory.reaction.result.result] > config.mineral.minAmount) {
-    this.log('Done with reaction:' + this.memory.reaction.result.result);
+  if (this.getResourceAmountWithNextTiers(this.memory.reaction.result.result) > config.mineral.minAmount &&
+    (this.terminal.store[this.memory.reaction.result.result] > config.mineral.minAmount)) {
+    if (config.debug.mineral) {
+      this.log('Done with reaction:' + this.memory.reaction.result.result);
+    }
     delete this.memory.reaction;
   }
 };
 
+Room.prototype.getMineralType = function() {
+  if (this.memory.mineralType === undefined) {
+    const minerals = this.findMinerals();
+    this.memory.mineralType = minerals.length > 0 ? minerals[0].mineralType : null;
+  }
+  return this.memory.mineralType;
+};
+
 Room.prototype.orderMinerals = function() {
-  if (this.exectueEveryTicks(20)) {
+  if (this.executeEveryTicks(20)) {
     const baseMinerals = [
       RESOURCE_HYDROGEN,
       RESOURCE_OXYGEN,
@@ -131,13 +143,10 @@ Room.prototype.orderMinerals = function() {
     ];
 
     const room = this;
-    const orderByDistance = function(object) {
-      return Game.map.getRoomLinearDistance(room.name, object);
-    };
 
     for (const mineral of baseMinerals) {
       if (!this.terminal.store[mineral] || this.terminal.store[mineral] < 1000) {
-        const roomsOther = _.sortBy(Memory.myRooms, orderByDistance);
+        const roomsOther = findMyRoomsSortByDistance(this.name);
 
         for (const roomOtherName of roomsOther) {
           if (roomOtherName === this.name) {
@@ -184,11 +193,8 @@ Room.prototype.handleTerminal = function() {
 
   if (this.terminal.store.energy < energy) {
     // this.log('Terminal not enough energy');
-    this.memory.terminalTooLessEnergy = true;
     return false;
   }
-
-  this.memory.terminalTooLessEnergy = false;
 
   if (this.terminal.store[order.type] < order.amount) {
     return false;

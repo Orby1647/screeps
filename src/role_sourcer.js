@@ -42,89 +42,44 @@ roles.sourcer.killPrevious = true;
 // TODO should be true, but flee must be fixed before 2016-10-13
 roles.sourcer.flee = false;
 
-roles.sourcer.preMove = function(creep, directions) {
-  if (creep.allowOverTake(directions)) {
-    return true;
-  }
-  // Misplaced spawn
-  if (creep.inBase() && (creep.room.memory.misplacedSpawn || creep.room.controller.level < 3)) {
-    // creep.say('smis', true);
-    const targetId = creep.memory.routing.targetId;
-
-    const source = creep.room.memory.position.creep[targetId];
-    // TODO better the position from the room memory
-    creep.moveTo(source, {
-      ignoreCreeps: true,
-    });
-    if (creep.pos.getRangeTo(source) > 1) {
-      return true;
-    }
-  }
-
-  if (!creep.room.controller) {
-    const target = creep.findClosestSourceKeeper();
-    if (target !== null) {
-      const range = creep.pos.getRangeTo(target);
-      if (range > 6) {
-        creep.memory.routing.reverse = false;
-      }
-      if (range < 6) {
-        creep.memory.routing.reverse = true;
-      }
-    }
-  }
-
-  // TODO copied from nextroomer, should be extracted to a method or a creep flag
-  // Remove structures in front
-  if (!directions) {
+roles.sourcer.updateSettings = function(room, creep) {
+  if (!room.storage) {
     return false;
   }
-  // TODO when is the forwardDirection missing?
-  if (directions.forwardDirection) {
-    const posForward = creep.pos.getAdjacentPosition(directions.forwardDirection);
-    const structures = posForward.lookFor(LOOK_STRUCTURES);
-    for (const structure of structures) {
-      if (structure.structureType === STRUCTURE_ROAD) {
-        continue;
-      }
-      if (structure.structureType === STRUCTURE_RAMPART && structure.my) {
-        continue;
-      }
-      if (structure.structureType === STRUCTURE_SPAWN && structure.my) {
-        continue;
-      }
-      creep.dismantle(structure);
-      creep.say('dismantle', true);
-      break;
-    }
+  const target = creep.routing && creep.routing.targetRoom ? creep.routing.targetRoom : room.name;
+  const inBase = (target === room.name);
+  if (!inBase && Memory.rooms[target].sourceKeeperRoom) {
+    return {
+      prefixString: 'MC',
+      layoutString: 'MW',
+      sufixString: 'MH',
+      amount: [5, 10],
+      maxLayoutAmount: 1,
+    };
   }
+  return false;
 };
 
-roles.sourcer.died = function(name, memory) {
-  // console.log(name, 'died', JSON.stringify(memory));
-  delete Memory.creeps[name];
+roles.sourcer.preMove = function(creep, directions) {
+  return creep.preMoveExtractorSourcer(directions);
 };
 
 roles.sourcer.action = function(creep) {
-  // TODO check source keeper structure for ticksToSpawn
-  if (!creep.room.controller) {
-    const target = creep.findClosestSourceKeeper();
-    if (target !== null) {
-      const range = creep.pos.getRangeTo(target);
-      if (range < 5) {
-        delete creep.memory.routing.reached;
-        creep.memory.routing.reverse = true;
-      }
-    }
+  creep.checkForSourceKeeper();
+
+  creep.setNextSpawn();
+  creep.spawnReplacement();
+
+  const source = Game.getObjectById(creep.memory.routing.targetId);
+  if (!creep.myHarvest(source)) {
+    return false;
   }
-
-  creep.handleSourcer();
+  creep.buildContainer();
+  creep.spawnCarry();
+  if (creep.inBase()) {
+    creep.baseHarvesting();
+  } else {
+    creep.selfHeal();
+  }
   return true;
-};
-
-roles.sourcer.execute = function(creep) {
-  creep.log('Execute!!!');
-  creep.memory.routing.targetReached = true;
-  creep.handleSourcer();
-  //  throw new Error();
 };

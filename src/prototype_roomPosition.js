@@ -1,5 +1,12 @@
 'use strict';
 
+RoomPosition.prototype.findClosestStructureWithMissingEnergyByRange = function(filter) {
+  const structure = this.findClosestByRange(FIND_MY_STRUCTURES, {
+    filter: (object) => (object.store && object.store.getFreeCapacity(RESOURCE_ENERGY) > 0 && (!filter || filter(object))),
+  });
+  return structure;
+};
+
 RoomPosition.prototype.checkTowerFillerPos = function() {
   if (this.isBorder(3)) {
     return false;
@@ -45,13 +52,24 @@ RoomPosition.prototype.getClosestSource = function(filter) {
 };
 
 RoomPosition.prototype.findInRangeStructures = function(objects, range, structureTypes) {
+  // TODO this method should be deprecated
   return this.findInRangePropertyFilter(objects, range, 'structureType', structureTypes);
+};
+
+RoomPosition.prototype.findHostileStructuresInRangedAttackRange = function() {
+  return this.findInRange(FIND_HOSTILE_STRUCTURES, 3);
 };
 
 RoomPosition.prototype.findClosestStructure = function(structures, structureType) {
   return this.findClosestByPathPropertyFilter(structures, 'structureType', [structureType]);
 };
 
+/**
+ * Get the position adjacent to this position in a specific direction
+ *
+ * @param {Number} direction (or 0)
+ * @return {RoomPosition} adjacent position, or this position for direction==0
+ */
 RoomPosition.prototype.getAdjacentPosition = function(direction) {
   const adjacentPos = [
     [0, 0],
@@ -64,22 +82,39 @@ RoomPosition.prototype.getAdjacentPosition = function(direction) {
     [-1, 0],
     [-1, -1],
   ];
+  // no clean way to handle negative directions here because 0 is a special case instead of equivalent to 8
   if (direction > 8) {
-    direction = (direction - 1) % 8 + 1;
+    direction = RoomPosition.fixDirection(direction);
   }
-  return new RoomPosition(this.x + adjacentPos[direction][0], this.y + adjacentPos[direction][1], this.roomName);
+  const x = this.x + adjacentPos[direction][0];
+  const y = this.y + adjacentPos[direction][1];
+
+  try {
+    return new RoomPosition(x, y, this.roomName);
+  } catch (e) {
+    // this.log(`RoomPosition.getAdjacentPosition Exception: ${e} for direction ${direction} x: ${x} y: ${y} roomName: ${this.roomName} stack: ${e.stack}`);
+    // throw e;
+    return;
+  }
 };
 
 RoomPosition.prototype.getAllAdjacentPositions = function* () {
   for (let direction = 1; direction <= 8; direction++) {
-    yield this.getAdjacentPosition(direction);
+    try {
+      yield this.getAdjacentPosition(direction);
+    } catch (e) {
+      // This happens when the RoomPosition is invalid
+      continue;
+    }
   }
 };
 
 RoomPosition.prototype.getAllPositionsInRange = function* (range) {
   for (let x = -range; x <= range; ++x) {
     for (let y = -range; y <= range; ++y) {
-      yield new RoomPosition(this.x + x, this.y + y, this.roomName);
+      if (this.x + x >= 0 && this.y + y >= 0 && this.x + x < 50 && this.y + y < 50) {
+        yield new RoomPosition(this.x + x, this.y + y, this.roomName);
+      }
     }
   }
 };
@@ -106,19 +141,8 @@ RoomPosition.prototype.checkForObstacleStructure = function() {
 };
 
 RoomPosition.prototype.inPath = function() {
-  // if (true) {
-  //   throw new Error();
-  // }
   const room = this.getRoom();
-  for (const pathName of Object.keys(room.getMemoryPaths())) {
-    const path = room.getMemoryPath(pathName);
-    for (const pos of path) {
-      if (this.isEqualTo(pos.x, pos.y)) {
-        return true;
-      }
-    }
-  }
-  return false;
+  return room.getMemoryPathsSet()[`${this.x} ${this.y}`];
 };
 
 RoomPosition.prototype.inPositions = function() {
@@ -129,23 +153,26 @@ RoomPosition.prototype.inPositions = function() {
   }
 
   for (const creepId of Object.keys(room.memory.position.creep)) {
-    const pos = room.memory.position.creep[creepId];
-    if (!pos) {
-      // TODO introduce this.log()
-      // console.log('inPositions:', this.roomName, creepId);
+    if (!room.memory.position.creep[creepId]) {
+      // TODO when does this happen?
       continue;
     }
-    if (this.isEqualTo(pos.x, pos.y)) {
-      return true;
+    try {
+      for (const pos of room.memory.position.creep[creepId]) {
+        if (!pos) {
+          continue;
+        }
+        if (this.isEqualTo(pos.x, pos.y)) {
+          return true;
+        }
+      }
+    } catch (e) {
+      this.log(`inPositions ${creepId} ${room.memory.position.creep[creepId]} ${e}`);
     }
   }
+
   for (const structureId of Object.keys(room.memory.position.structure)) {
-    const poss = room.memory.position.structure[structureId];
-    for (const pos of poss) {
-      // TODO special case e.g. when powerSpawn can't be set on costmatrix.setup - need to be fixed there
-      if (!pos) {
-        continue;
-      }
+    for (const pos of room.memory.position.structure[structureId]) {
       if (this.isEqualTo(pos.x, pos.y)) {
         return true;
       }
@@ -173,34 +200,58 @@ RoomPosition.prototype.isValid = function() {
   return true;
 };
 
-RoomPosition.prototype.validPosition = function() {
-  if (this.isBorder()) {
+RoomPosition.prototype.validPosition = function(opts = {}) {
+  if (!opts.ignoreBorder && this.isBorder()) {
+    if (opts.debug) {
+      this.log('is border');
+    }
     return false;
   }
-  if (this.checkForWall()) {
+  if (!opts.ignoreWall && this.checkForWall()) {
+    if (opts.debug) {
+      this.log('is wall');
+    }
     return false;
   }
-  if (this.inPositions()) {
+  if (!opts.ignorePositions && this.inPositions(opts)) {
+    if (opts.debug) {
+      this.log('is positions');
+    }
     return false;
   }
-  if (this.inPath()) {
+  if (!opts.ignorePath && this.inPath()) {
+    if (opts.debug) {
+      this.log('is path');
+    }
     return false;
   }
   return true;
 };
 
-RoomPosition.prototype.getFirstNearPosition = function() {
-  return this.findNearPosition().next().value;
+RoomPosition.prototype.getFirstNearPosition = function(...args) {
+  return this.findNearPosition(...args).next().value;
 };
 
-RoomPosition.prototype.getBestNearPosition = function() {
-  return _.max(Array.from(this.findNearPosition()), (pos) => Array.from(pos.findNearPosition()).length);
+RoomPosition.prototype.getLastNearPosition = function(...args) {
+  // TODO not sure how this works
+  const arr = this.findNearPosition(...args);
+  arr.next();
+  arr.next();
+  return arr.next().value;
 };
 
-RoomPosition.prototype.findNearPosition = function* () {
+RoomPosition.prototype.getBestNearPosition = function(...args) {
+  return _.max(Array.from(this.findNearPosition(...args)), (pos) => Array.from(pos.findNearPosition(...args)).length);
+};
+
+RoomPosition.prototype.getWorseNearPosition = function(...args) {
+  return _.max(Array.from(this.findNearPosition(...args)), (pos) => -1 * Array.from(pos.findNearPosition(...args)).length);
+};
+
+RoomPosition.prototype.findNearPosition = function* (...args) {
   for (const posNew of this.getAllAdjacentPositions()) {
-    if (!posNew.validPosition()) {
-      //        console.log(posNew + ' - invalid');
+    if (!posNew.validPosition(...args)) {
+      // console.log(posNew + ' - invalid');
       continue;
     }
     // Single position or array
@@ -223,15 +274,13 @@ RoomPosition.wrapFindMethod = (methodName, extraParamsCount) => function(findTar
   if (_.isNumber(findTarget)) {
     const objects = this.getRoom().findPropertyFilter(findTarget, ...propertyFilterParams);
     return this[methodName](objects, ...extraParams);
-  } else {
-    return this[methodName](findTarget, ...extraParams, Room.getPropertyFilterOptsObj(...propertyFilterParams));
   }
   /* eslint-enable no-invalid-this */
 };
 
 /**
  *
- * @param {Number|RoomObject[]}  findTarget One of the FIND constant. e.g. [FIND_MY_STRUCTURES] or array of RoomObject to apply filters
+ * @param {Number}  findTarget One of the FIND constant. e.g. [FIND_MY_STRUCTURES] or array of RoomObject to apply filters
  * @param range
  * @param {String}  property The property to filter on. e.g. 'structureType' or 'memory.role'
  * @param {Array}  properties The properties to filter. e.g. [STRUCTURE_ROAD, STRUCTURE_RAMPART]
@@ -244,7 +293,7 @@ RoomPosition.prototype.findInRangePropertyFilter = RoomPosition.wrapFindMethod('
 
 /**
  *
- * @param {Number|RoomObject[]}  findTarget One of the FIND constant. e.g. [FIND_MY_STRUCTURES] or array of RoomObject to apply filters
+ * @param {Number}  findTarget One of the FIND constant. e.g. [FIND_MY_STRUCTURES] or array of RoomObject to apply filters
  * @param {String}  property The property to filter on. e.g. 'structureType' or 'memory.role'
  * @param {Array}  properties The properties to filter. e.g. [STRUCTURE_ROAD, STRUCTURE_RAMPART]
  * @param {Boolean} [without=false] Exclude or include the properties to find.
@@ -265,3 +314,47 @@ RoomPosition.prototype.findClosestByRangePropertyFilter = RoomPosition.wrapFindM
  * @return {Array} the objects returned in an array.
  */
 RoomPosition.prototype.findClosestByPathPropertyFilter = RoomPosition.wrapFindMethod('findClosestByPath', 0);
+
+/**
+ * Restore RoomPosition object after JSON serialisation.
+ *
+ * @param {object} json JSON object
+ * @param {number} json.x X coordinate
+ * @param {number} json.y Y coordinate
+ * @param {string} json.roomName Name of the room
+ * @return {RoomPosition} RoomPosition object
+ */
+RoomPosition.fromJSON = function(json) {
+  return new RoomPosition(json.x, json.y, json.roomName);
+};
+
+/**
+ * Given a direction-like number, wrap it to fit in 1-8
+ *
+ * @param {Number} direction
+ * @return {Number} fixed direction
+ */
+RoomPosition.fixDirection = function(direction) {
+  return (((direction - 1) % 8) + 8) % 8 + 1;
+};
+
+/**
+ * Given a direction, 1-8, increment/decrement it by some value
+ *
+ * @param {Number} direction
+ * @param {Number} change
+ * @return {Number}
+ */
+RoomPosition.changeDirection = function(direction, change) {
+  return RoomPosition.fixDirection(direction + change);
+};
+
+/**
+ * Given a direction, 1-8, return the opposite direction
+ *
+ * @param {Number} direction
+ * @return {Number}
+ */
+RoomPosition.oppositeDirection = function(direction) {
+  return RoomPosition.fixDirection(direction + 4);
+};

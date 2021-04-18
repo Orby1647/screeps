@@ -14,9 +14,8 @@ roles.nextroomerattack.settings = {
   fillTough: true,
 };
 
-roles.nextroomerattack.died = function(name, memory) {
-  console.log('--->', name, 'Died naturally?');
-  delete Memory.creeps[name];
+roles.nextroomerattack.died = function(name) {
+  brain.main.cleanUpDyingCreep(name);
 };
 
 roles.nextroomerattack.action = function(creep) {
@@ -28,7 +27,7 @@ roles.nextroomerattack.action = function(creep) {
   const spawn = creep.pos.findClosestByRangePropertyFilter(FIND_HOSTILE_STRUCTURES, 'structureType', [STRUCTURE_SPAWN]);
 
   if (spawn === null) {
-    const hostileCreep = creep.pos.findClosestEnemy();
+    const hostileCreep = creep.findClosestEnemy();
     if (hostileCreep !== null) {
       creep.moveTo(hostileCreep);
       creep.attack(hostileCreep);
@@ -41,8 +40,4 @@ roles.nextroomerattack.action = function(creep) {
   creep.attack(spawn);
   creep.moveByPath(path);
   return true;
-};
-
-roles.nextroomerattack.execute = function(creep) {
-  creep.log('Execute!!!');
 };

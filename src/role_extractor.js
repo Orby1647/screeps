@@ -16,10 +16,10 @@ roles.extractor.settings = {
   maxLayoutAmount: 5,
 };
 
-function executeExtractor(creep) {
+roles.extractor.preMove = function(creep, directions) {
+  creep.preMoveExtractorSourcer(directions);
+};
+
+roles.extractor.action = function(creep) {
   return creep.handleExtractor();
-}
-
-roles.extractor.action = executeExtractor;
-
-roles.extractor.execute = executeExtractor;
+};

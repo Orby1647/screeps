@@ -5,21 +5,26 @@ Creep.pickableResources = function(creep) {
 };
 
 Creep.prototype.harvesterBeforeStorage = function() {
+  this.creepLog(`harvesterBeforeStorage`);
   const methods = [];
 
   methods.push(Creep.getEnergy);
 
-  if (this.room.controller.ticksToDowngrade < CONTROLLER_DOWNGRADE[this.room.controller.level] / 10 || this.room.controller.level === 1) {
+  if (this.room.controller && (this.room.controller.ticksToDowngrade < CONTROLLER_DOWNGRADE[this.room.controller.level] / 10 || this.room.controller.level === 1)) {
     methods.push(Creep.upgradeControllerTask);
   }
+  const harvesters = this.room.findPropertyFilter(FIND_MY_CREEPS, 'memory.role', ['harvester']).map((creep) => creep.name);
+  harvesters.sort();
+  if (harvesters.indexOf(this.name) < 2) {
+    methods.push(Creep.transferEnergy);
+  }
 
-  methods.push(Creep.transferEnergy);
-  const structures = this.room.findPropertyFilter(FIND_MY_CONSTRUCTION_SITES, 'structureType', [STRUCTURE_RAMPART, STRUCTURE_WALL, STRUCTURE_CONTROLLER], true);
+  const structures = this.room.findPropertyFilter(FIND_MY_CONSTRUCTION_SITES, 'structureType', [STRUCTURE_RAMPART, STRUCTURE_WALL, STRUCTURE_CONTROLLER], {inverse: true});
   if (structures.length > 0) {
     methods.push(Creep.constructTask);
   }
 
-  if (this.room.controller.level < 9) {
+  if (this.room.controller && this.room.controller.level < 9) {
     methods.push(Creep.upgradeControllerTask);
   } else {
     methods.push(Creep.repairStructure);
@@ -29,8 +34,7 @@ Creep.prototype.harvesterBeforeStorage = function() {
   return true;
 };
 
-Creep.prototype.checkEnergyTransfer = function(otherCreep) {
-  // TODO duplicate from role_carry, extract to method
+Creep.prototype.checkCarryEnergyForBringingBackToStorage = function(otherCreep) {
   let offset = 0;
   if (otherCreep) {
     offset = otherCreep.carry.energy;
@@ -50,8 +54,7 @@ Creep.prototype.checkEnergyTransfer = function(otherCreep) {
 
 // return true if helper can't transfer to creep
 Creep.prototype.checkHelperNoTransfer = function(creep) {
-  return this.memory.helper && !creep.memory.helper &&
-        creep.memory.role === 'carry' && creep.memory.base !== this.memory.base;
+  return creep.memory.base !== this.memory.base;
 };
 
 Creep.prototype.findCreepWhichCanTransfer = function(creeps) {
@@ -65,7 +68,10 @@ Creep.prototype.findCreepWhichCanTransfer = function(creeps) {
       if (otherCreep.checkHelperNoTransfer(this)) {
         continue;
       }
-      return this.checkEnergyTransfer(otherCreep);
+      if (otherCreep.memory.routing.pathPos < 0) {
+        continue;
+      }
+      return this.checkCarryEnergyForBringingBackToStorage(otherCreep);
     }
     continue;
   }
@@ -74,15 +80,14 @@ Creep.prototype.findCreepWhichCanTransfer = function(creeps) {
 
 Creep.prototype.checkForTransfer = function(direction) {
   if (!direction) {
+    this.creepLog(`checkForTransfer no direction}`);
     return false;
   }
 
   const adjacentPos = this.pos.getAdjacentPosition(direction);
 
-  if (adjacentPos.x < 0 || adjacentPos.y < 0) {
-    return false;
-  }
-  if (adjacentPos.x > 49 || adjacentPos.y > 49) {
+  if (adjacentPos.isBorder(-2)) {
+    this.creepLog(`checkForTransfer isBorder}`);
     return false;
   }
 
@@ -90,13 +95,13 @@ Creep.prototype.checkForTransfer = function(direction) {
   return this.findCreepWhichCanTransfer(creeps);
 };
 
-Creep.prototype.pickupWhileMoving = function(reverse) {
+Creep.prototype.pickupWhileMoving = function() {
   if (this.inBase() && this.memory.routing.pathPos < 2) {
-    return reverse;
+    return false;
   }
 
   if (_.sum(this.carry) === this.carryCapacity) {
-    return reverse;
+    return false;
   }
 
   const resources = this.room.find(FIND_DROPPED_RESOURCES, {
@@ -122,7 +127,7 @@ Creep.prototype.pickupWhileMoving = function(reverse) {
       }
     }
   }
-  return reverse;
+  return false;
 };
 
 Creep.prototype.handleExtractor = function() {
@@ -142,11 +147,14 @@ Creep.prototype.handleExtractor = function() {
     }
   }
 
-  const minerals = this.room.find(FIND_MINERALS);
+  const minerals = this.room.findMinerals();
   if (minerals.length > 0) {
-    const posMem = this.room.memory.position.creep[minerals[0].id];
-    const pos = new RoomPosition(posMem.x, posMem.y, posMem.roomName);
-    this.moveToMy(pos, 0);
+    const posMem = this.room.memory.position.creep[minerals[0].id][0];
+    // TODO this could be moved to `creep.moveToMy`, just need to unify the parameter
+    if (this.pos.x !== posMem.x || this.pos.y !== posMem.y) {
+      const pos = new RoomPosition(posMem.x, posMem.y, posMem.roomName);
+      this.moveToMy(pos, 0);
+    }
     this.harvest(minerals[0]);
   }
   return true;
@@ -185,12 +193,18 @@ Creep.prototype.upgraderUpdateStats = function() {
 };
 
 Creep.prototype.handleUpgrader = function() {
-  this.sayIdiotList();
+  // this.sayIdiotList();
   this.spawnReplacement(1);
   if (this.room.memory.attackTimer > 50 && this.room.controller.level > 6) {
     if (this.room.controller.ticksToDowngrade > 10000) {
       return true;
     }
+  }
+  if (this.room.controller.ticksToDowngrade > (CONTROLLER_DOWNGRADE[this.room.controller.level] * config.nextRoom.minDowngradPercent / 100) &&
+    this.room.storage.store.energy < config.creep.energyFromStorageThreshold &&
+    Game.time % 1000 !== 0) {
+    this.creepLog('Skipping controller upgrade, not enough in storage');
+    return true;
   }
 
   let returnCode = this.upgradeController(this.room.controller);
@@ -208,7 +222,7 @@ Creep.prototype.handleUpgrader = function() {
 Creep.prototype.buildContainerConstructionSite = function() {
   const returnCode = this.pos.createConstructionSite(STRUCTURE_CONTAINER);
   if (returnCode === OK) {
-    this.log('Create cs for container');
+    this.creepLog('Create cs for container');
     return true;
   }
   if (returnCode === ERR_INVALID_TARGET) {
@@ -256,33 +270,97 @@ Creep.prototype.buildContainer = function() {
   }
 };
 
+Creep.prototype.withdrawEnergyFromTarget = function(target) {
+  let returnValue = false;
+  const returnCode = this.withdraw(target, RESOURCE_ENERGY);
+  if (returnCode === OK) {
+    returnValue = true;
+  }
+  return returnValue;
+};
+
+Creep.prototype.withdrawResourcesFromTarget = function(target) {
+  let returnValue = false;
+  const resosurces = Object.keys(target.store) || Object.keys(target.carry);
+  for (const resosurce of resosurces) {
+    if (!returnValue) {
+      returnValue = this.withdraw(target, resosurce) === OK;
+    }
+  }
+  return returnValue;
+};
+
+Creep.prototype.withdrawResourcesFromTargets = function(targets, onlyEnergy) {
+  let returnValue = false;
+  for (const target of targets) {
+    if (!returnValue) {
+      returnValue = onlyEnergy ? this.withdrawEnergyFromTarget(target) : this.withdrawResourcesFromTarget(target);
+    }
+  }
+  return returnValue;
+};
+
+Creep.prototype.withdrawTombstone = function(onlyEnergy) {
+  onlyEnergy = onlyEnergy || false;
+  let returnValue = false;
+  // FIND_TOMBSTONES and get them empty first
+  const tombstones = this.pos.findInRange(FIND_TOMBSTONES, 1);
+  if (tombstones.length > 0) {
+    if (onlyEnergy) {
+      returnValue = this.withdrawResourcesFromTargets(tombstones, true);
+    } else {
+      returnValue = this.withdrawResourcesFromTargets(tombstones);
+    }
+  }
+  return returnValue;
+};
+
+Creep.prototype.withdrawContainers = function() {
+  let returnValue = false;
+  const containers = this.pos.findInRangeStructures(FIND_STRUCTURES, 1, [STRUCTURE_CONTAINER]);
+  if (containers.length > 0) {
+    const returnCode = this.withdraw(containers[0], RESOURCE_ENERGY);
+    if (returnCode === OK) {
+      returnValue = true;
+    }
+  }
+  return returnValue;
+};
+
+Creep.prototype.giveSourcersEnergy = function() {
+  let returnValue = false;
+  const sourcers = this.pos.findInRangePropertyFilter(FIND_MY_CREEPS, 1, 'memory.role', ['sourcer']);
+  if (sourcers.length > 0) {
+    const returnCode = sourcers[0].transfer(this, RESOURCE_ENERGY);
+    if (returnCode === OK) {
+      returnValue = true;
+    }
+  }
+  return returnValue;
+};
+
 Creep.prototype.pickupEnergy = function() {
-  const resources = this.room.findPropertyFilter(FIND_DROPPED_RESOURCES, 'resourceType', [RESOURCE_ENERGY], false, {
+  const resources = this.room.findPropertyFilter(FIND_DROPPED_RESOURCES, 'resourceType', [RESOURCE_ENERGY], {
     filter: Creep.pickableResources(this),
   });
   if (resources.length > 0) {
     const resource = resources[0];
     const returnCode = this.pickup(resource);
-    return returnCode === OK;
-  }
-
-  const containers = this.pos.findInRangeStructures(FIND_STRUCTURES, 1, [STRUCTURE_CONTAINER]);
-  if (containers.length > 0) {
-    const returnCode = this.withdraw(containers[0], RESOURCE_ENERGY);
     if (returnCode === OK) {
-      return true;
+      if (resource.amount >= this.store.getFreeCapacity()) {
+        return true;
+      }
     }
   }
-
-  const sourcers = this.pos.findInRangePropertyFilter(FIND_MY_CREEPS, 1, 'memory.role', ['sourcer']);
-  if (sourcers.length > 0) {
-    const returnCode = sourcers[0].transfer(this, RESOURCE_ENERGY);
-    if (returnCode === OK) {
-      return true;
-    }
+  if (this.withdrawContainers()) {
+    return true;
   }
 
-  return false;
+  if (this.withdrawTombstone()) {
+    return true;
+  }
+
+  return this.giveSourcersEnergy();
 };
 
 const checkCreepForTransfer = function(creep) {
@@ -293,10 +371,15 @@ const checkCreepForTransfer = function(creep) {
   if (Game.creeps[creep.name].memory.role === 'extractor') {
     return false;
   }
+  // don't transfer to mineral, fixes full terminal with 80% energy?
+  if (Game.creeps[creep.name].memory.role === 'mineral') {
+    return false;
+  }
   // Do we want this?
   if (Game.creeps[creep.name].memory.role === 'powertransporter') {
     return false;
   }
+  // can not carry
   if (creep.carry.energy === creep.carryCapacity) {
     return false;
   }
@@ -343,7 +426,7 @@ const energyAcceptingLink = function(object, room) {
 };
 
 const terminalAvailable = function(object) {
-  if (object.structureType === STRUCTURE_TERMINAL && (object.store.energy || 0) > 10000) {
+  if (object.structureType === STRUCTURE_TERMINAL && (object.store.energy || 0) > config.terminal.maxEnergyAmount) {
     return false;
   }
   return true;
@@ -437,7 +520,7 @@ Creep.prototype.transferToStructures = function() {
 };
 
 Creep.prototype.getEnergyFromSourcer = function() {
-  const sourcers = this.pos.findInRangePropertyFilter(FIND_MY_CREEPS, 1, 'memory.role', ['sourcer'], false, {
+  const sourcers = this.pos.findInRangePropertyFilter(FIND_MY_CREEPS, 1, 'memory.role', ['sourcer'], {
     filter: (creep) => creep.carry.energy > 0,
   });
   if (sourcers.length > 0) {
@@ -451,18 +534,20 @@ Creep.prototype.getEnergyFromSourcer = function() {
 };
 
 Creep.prototype.moveToSource = function(source, swarm = false) {
-  if (!this.memory.routing) {
-    this.memory.routing = {};
-  }
   this.memory.routing.reverse = false;
   if (swarm && this.pos.inRangeTo(source, 3)) {
-    // should not be `moveToMy` unless it will start to handle creeps
-    this.moveTo(source.pos);
-  } else if (this.room.memory.misplacedSpawn || this.room.controller.level < 2) {
-    // TODO should be `moveToMy`, but that hangs in W5N1 spawn (10,9)
-    this.moveTo(source.pos);
+    this.moveToMy(source.pos);
+  } else if (this.room.memory.misplacedSpawn || (this.room.controller && this.room.controller.level < 2)) {
+    this.moveToMy(source.pos);
   } else {
-    this.moveByPathMy([{'name': this.room.name}], 0, 'pathStart', source.id);
+    const route = [{'name': this.room.name}];
+    const routePos = 0;
+    const start = 'pathStart';
+    const target = source.id;
+    const path = this.room.getPath(route, routePos, start, target);
+    this.memory.routing.pathPos = this.getPathPos(path);
+    const directions = this.getDirections(path);
+    this.moveByPathMy(path, this.memory.routing.pathPos, directions);
   }
   return true;
 };
@@ -511,15 +596,19 @@ Creep.prototype.getEnergyFromSource = function() {
     return false;
   }
 
-  if (range <= 2) {
-    if (this.getEnergyFromSourcer()) {
-      return true;
-    }
+  if (range <= 2 && this.getEnergyFromSourcer()) {
+    return true;
   }
 
   if (range === 1) {
     return this.harvestSource(source);
   } else {
+    if (range > 1 && range < 4) {
+      // TODO avoid exits here
+      this.moveTo(source);
+      return true;
+    }
+    this.creepLog(`getEnergy.moveToSource`);
     return this.moveToSource(source, swarm);
   }
 };
@@ -530,13 +619,13 @@ Creep.prototype.setHasEnergy = function() {
   } else if (this.memory.hasEnergy && this.carry.energy === 0) {
     this.memory.hasEnergy = false;
   } else if (!this.memory.hasEnergy &&
-    this.carry.energy === this.carryCapacity) {
+    _.sum(this.carry) === this.carryCapacity) {
     this.memory.hasEnergy = true;
   }
 };
 
 Creep.prototype.getDroppedEnergy = function() {
-  const target = this.pos.findClosestByRangePropertyFilter(FIND_DROPPED_RESOURCES, 'resourceType', [RESOURCE_ENERGY], false, {
+  const target = this.pos.findClosestByRangePropertyFilter(FIND_DROPPED_RESOURCES, 'resourceType', [RESOURCE_ENERGY], {
     filter: (object) => object.amount > 0,
   });
   if (target === null) {
@@ -547,7 +636,7 @@ Creep.prototype.getDroppedEnergy = function() {
     this.pickupOrWithdrawFromSourcer(target);
     return true;
   }
-  if (target.energy > (energyRange * 10) * (this.carry.energy + 1)) {
+  if (target.energy > (energyRange * 15) * (this.carry.energy + 1)) {
     this.say('dropped');
     this.moveToMy(target.pos, 1);
     return true;
@@ -560,20 +649,26 @@ Creep.prototype.getEnergy = function() {
    * No energy, goes to collect energy until full.
    * Full energy, uses energy until empty.
    */
+  this.pickupEnergy();
   this.setHasEnergy();
 
   if (this.memory.hasEnergy) {
     return false;
   }
   if (this.getDroppedEnergy()) {
+    this.creepLog(`getEnergy.getDroppedEnergy`);
     return true;
   }
   if (this.getEnergyFromStorage()) {
+    this.creepLog(`getEnergy.getEnergyFromStorage`);
     return true;
   }
   if (this.getEnergyFromHostileStructures()) {
+    this.creepLog(`getEnergy.getEnergyFromHostileStructures`);
     return true;
   }
+
+  this.creepLog(`getEnergy.getEnergyFromSource`);
   return this.getEnergyFromSource();
 };
 
@@ -585,40 +680,64 @@ Creep.prototype.buildConstructionSite = function(target) {
   } else if (returnCode === ERR_NOT_ENOUGH_RESOURCES) {
     return true;
   } else if (returnCode === ERR_INVALID_TARGET) {
-    this.log('config_creep_resource construct: ' + returnCode + ' ' + JSON.stringify(target.pos));
     this.moveRandom();
     target.pos.clearPosition(target);
     return true;
   }
-  this.log('config_creep_resource construct: ' + returnCode + ' ' + JSON.stringify(target.pos));
+  this.log(`creep_resources.buildConstructionSite build returnCode: ${returnCode} target: ${JSON.stringify(target)}`);
   return false;
+};
+
+Creep.prototype.moveToAndBuildConstructionSite = function(target) {
+  this.creepLog('moveToAndBuildConstructionSite');
+  const range = this.pos.getRangeTo(target);
+  if (range <= 3) {
+    return this.buildConstructionSite(target);
+  }
+
+  // TODO is this necessary here? Maybe because of the planer
+  this.memory.routing.targetId = target.id;
+  this.moveToMy(target.pos, 3);
+  return true;
 };
 
 Creep.prototype.construct = function() {
   let target;
-  if (this.memory.role === 'nextroomer') {
-    target = this.pos.findClosestByRangePropertyFilter(FIND_CONSTRUCTION_SITES, 'structureType', [STRUCTURE_RAMPART], true);
-  } else {
-    target = this.pos.findClosestByRange(FIND_CONSTRUCTION_SITES);
+  if (this.memory.routing.targetId) {
+    target = Game.getObjectById(this.memory.routing.targetId);
+    this.creepLog('Use memory target', target);
+  }
+  if (!target || target === null) {
+    delete this.memory.routing.targetId;
+    if (this.memory.role === 'nextroomer') {
+      target = this.pos.findClosestByRangePropertyFilter(FIND_CONSTRUCTION_SITES, 'structureType', [STRUCTURE_RAMPART], {inverse: true});
+    } else if (this.memory.role === 'harvester') {
+      target = this.pos.findClosestByRangePropertyFilter(FIND_CONSTRUCTION_SITES, 'structureType', [STRUCTURE_ROAD, STRUCTURE_RAMPART, STRUCTURE_WALL], {inverse: true});
+    } else {
+      target = this.pos.findClosestByRange(FIND_CONSTRUCTION_SITES);
+    }
   }
 
   if (target === null) {
     return false;
   }
 
-  const range = this.pos.getRangeTo(target);
-  if (range <= 3) {
-    return this.buildConstructionSite(target);
-  }
-
-  this.moveToMy(target.pos, 3);
-  return true;
+  return this.moveToAndBuildConstructionSite(target);
 };
 
 Creep.prototype.getTransferTargetStructure = function() {
-  const structure = this.pos.findClosestByRangePropertyFilter(FIND_MY_STRUCTURES, 'structureType', [STRUCTURE_EXTENSION, STRUCTURE_SPAWN, STRUCTURE_TOWER], false, {
-    filter: (structure) => structure.energy < structure.energyCapacity,
-  });
+  let structure = this.pos.findClosestStructureWithMissingEnergyByRange(
+    (object) => object.structureType !== STRUCTURE_STORAGE,
+  );
+  // Harvester should always prefer Spawn and Extensions
+  if (this.memory.role === 'harvester') {
+    const structureSpawnExtension = this.pos.findClosestStructureWithMissingEnergyByRange(
+      (object) => (object.structureType === STRUCTURE_SPAWN || object.structureType === STRUCTURE_EXTENSION),
+    );
+    if (structureSpawnExtension !== null) {
+      structure = structureSpawnExtension;
+    }
+  }
   if (structure === null) {
     if (this.room.storage && this.room.storage.my && this.memory.role !== 'planer') {
       this.memory.target = this.room.storage.id;
@@ -639,15 +758,14 @@ Creep.prototype.getTransferTarget = function() {
   }
 
   const target = Game.getObjectById(this.memory.targetEnergyMy);
-  if (!target || (target.structureType !== STRUCTURE_STORAGE && target.energy === target.energyCapacity)) {
-    this.log(`transferEnergyMy: Can not find target ${this.memory.targetEnergyMy}`);
+  if (!target || target.store.getFreeCapacity(RESOURCE_ENERGY) === 0) {
     delete this.memory.targetEnergyMy;
     return false;
   }
   return target;
 };
 
-Creep.prototype.transferEnergyMy = function() {
+Creep.prototype.transferEnergy = function() {
   const target = this.getTransferTarget();
   if (!target) {
     return false;
@@ -656,7 +774,7 @@ Creep.prototype.transferEnergyMy = function() {
   if (range === 1) {
     const returnCode = this.transfer(target, RESOURCE_ENERGY);
     if (returnCode !== OK && returnCode !== ERR_FULL) {
-      this.log('transferEnergyMy: ' + returnCode + ' ' +
+      this.log('transferEnergy: ' + returnCode + ' ' +
         target.structureType + ' ' + target.pos);
     }
     delete this.memory.targetEnergyMy;
@@ -668,10 +786,11 @@ Creep.prototype.transferEnergyMy = function() {
 
 Creep.prototype.reserverSetLevel = function() {
   this.memory.level = 2;
-  if (this.room.controller.reservation && this.room.controller.reservation.ticksToEnd > 4500) {
+  const baseRoom = Game.rooms[this.memory.base];
+  if (baseRoom.getEnergyCapacityAvailable() < 2 * (BODYPART_COST.claim + BODYPART_COST.move) || (this.room.controller.reservation && this.room.controller.reservation.ticksToEnd > 4500)) {
     this.memory.level = 1;
   }
-  if (!this.room.controller.my && this.room.controller.reservation && this.room.controller.reservation.username !== Memory.username) {
+  if (baseRoom.getEnergyCapacityAvailable() >= 5 * (BODYPART_COST.claim + BODYPART_COST.move) || (!this.room.controller.my && this.room.controller.reservation && this.room.controller.reservation.username !== Memory.username)) {
     this.memory.level = 5;
   }
 };
@@ -681,7 +800,7 @@ const callStructurer = function(creep) {
   if (structurers.length > 0) {
     return false;
   }
-  const resourceStructures = creep.room.findPropertyFilter(FIND_STRUCTURES, 'structureType', [STRUCTURE_CONTROLLER, STRUCTURE_ROAD, STRUCTURE_CONTAINER], true);
+  const resourceStructures = creep.room.findPropertyFilter(FIND_STRUCTURES, 'structureType', [STRUCTURE_CONTROLLER, STRUCTURE_ROAD, STRUCTURE_CONTAINER], {inverse: true});
   if (resourceStructures.length > 0 && !creep.room.controller.my) {
     creep.log('Call structurer from ' + creep.memory.base + ' because of ' + resourceStructures[0].structureType);
     Game.rooms[creep.memory.base].checkRoleToSpawn('structurer', 1, undefined, creep.room.name);
@@ -698,7 +817,7 @@ const callCleaner = function(creep) {
     return false;
   }
 
-  if (!creep.room.exectueEveryTicks(1000)) {
+  if (!creep.room.executeEveryTicks(1000)) {
     return false;
   }
 
@@ -707,32 +826,8 @@ const callCleaner = function(creep) {
   }
 };
 
-const checkSourcerMatch = function(sourcers, sourceId) {
-  for (let i = 0; i < sourcers.length; i++) {
-    const sourcer = Game.creeps[sourcers[i].name];
-    if (sourcer.memory.routing.targetId === sourceId) {
-      return true;
-    }
-  }
-  return false;
-};
-
-const checkSourcer = function(creep) {
-  const sources = creep.room.find(FIND_SOURCES);
-  const sourcers = creep.room.findPropertyFilter(FIND_MY_CREEPS, 'memory.role', ['sourcer']);
-
-  if (sourcers.length < sources.length) {
-    const sourceParse = function(source) {
-      if (!checkSourcerMatch(sourcers, source.pos)) {
-        Game.rooms[creep.memory.base].checkRoleToSpawn('sourcer', 1, source.id, source.pos.roomName);
-      }
-    };
-    _.each(sources, (sourceParse));
-  }
-};
-
 Creep.prototype.callDefender = function() {
-  const hostiles = this.room.getEnemys();
+  const hostiles = this.room.findEnemys();
   if (hostiles.length > 0) {
     // this.log('Reserver under attack');
     if (!this.memory.defender_called) {
@@ -765,6 +860,11 @@ Creep.prototype.interactWithController = function() {
   if (this.room.controller.owner && this.room.controller.owner.username !== Memory.username) {
     this.say('attack');
     returnCode = this.attackController(this.room.controller);
+    if (returnCode === ERR_TIRED) {
+      this.respawnMe();
+      this.suicide();
+      return true;
+    }
   } else {
     returnCode = this.reserveController(this.room.controller);
   }
@@ -792,10 +892,6 @@ Creep.prototype.handleReserver = function() {
   this.spawnReplacement(1);
 
   callCleaner(this);
-
-  if (this.room.exectueEveryTicks(100) && this.room.controller.reservation && this.room.controller.reservation.username === Memory.username) {
-    checkSourcer(this);
-  }
 
   if (config.creep.reserverDefender) {
     this.callDefender();

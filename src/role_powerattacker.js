@@ -14,7 +14,7 @@ roles.powerattacker.settings = {
 };
 
 roles.powerattacker.action = function(creep) {
-  const hostileCreep = creep.pos.findClosestEnemy();
+  const hostileCreep = creep.findClosestEnemy();
   if (hostileCreep !== null) {
     creep.moveTo(hostileCreep);
     creep.attack(hostileCreep);
@@ -51,7 +51,7 @@ roles.powerattacker.action = function(creep) {
       creep.attack(hostileCreep);
       return true;
     }
-    creep.move((Math.random() * 8) + 1);
+    creep.move(_.random(1, 8));
     return false;
   }
 
@@ -64,8 +64,4 @@ roles.powerattacker.action = function(creep) {
   creep.moveTo(powerBank[0]);
   creep.attack(powerBank[0]);
   return true;
-};
-
-roles.powerattacker.execute = function(creep) {
-  creep.log('Execute!!!');
 };

@@ -1,16 +1,10 @@
 'use strict';
 
+const {findMyRoomsSortByDistance} = require('./helper_findMyRooms');
+
 Room.structureHasEnergy = (structure) => structure.store && structure.store.energy || structure.energy;
 
 Room.structureIsEmpty = (structure) => (!structure.store || _.sum(structure.store) === 0) && !structure.energy && !structure.mineralAmount && !structure.ghodium && !structure.power;
-
-Room.prototype.sortMyRoomsByLinearDistance = function(target) {
-  const sortByLinearDistance = function(object) {
-    return Game.map.getRoomLinearDistance(target, object);
-  };
-
-  return _.sortBy(Memory.myRooms, sortByLinearDistance);
-};
 
 Room.prototype.nearestRoomName = function(roomsNames, limit) {
   const roomName = this.name;
@@ -26,60 +20,70 @@ Room.prototype.nearestRoomName = function(roomsNames, limit) {
   return _.min(roomsNames, sortByLinearDistance);
 };
 
-Room.getPropertyFilterOptsObj = function(property, properties, without = false, opts = {}) {
-  const table = {};
-  _.each(properties, (e) => {
-    table[e] = true;
-  });
-  const propParts = property.split('.');
-  return Object.assign({}, opts, {
-    filter: (s) => {
-      let propValue = s;
-      for (const prop of propParts) {
-        propValue = propValue[prop];
-      }
-      return without ? !table[propValue] : table[propValue] && (!opts.filter || opts.filter(s));
-    },
-  });
-};
-
 /**
  * use a static array for filter a find.
  *
  * @param  {Number}  findTarget      one of the FIND constant. e.g. [FIND_MY_STRUCTURES]
  * @param  {String}  property        the property to filter on. e.g. 'structureType' or 'memory.role'
  * @param  {Array}  properties      the properties to filter. e.g. [STRUCTURE_ROAD, STRUCTURE_RAMPART]
- * @param  {Boolean} [without=false] Exclude or include the properties to find.
  * @param  {object} [opts={}] Additional options.
  * @param  {function} [opts.filter] Additional filter that wil be applied after cache.
+ * @param  {Boolean} [opts.inverse=false] Exclude or include the properties to find.
+ * @param  {Number} [opts.timeSpan=0] Return cached data even if it is outdated by `timeSpan` ticks.
  * @return {Array}                  the objects returned in an array.
  */
-Room.prototype.findPropertyFilter = function(findTarget, property, properties, without = false, opts = {}) {
-  const key = `${findTarget} ${property} ${properties} ${without}`;
-  this.checkCache();
-
-  let result;
-  if (cache.rooms[this.name].find[key] && cache.rooms[this.name].find[key].time === Game.time) {
-    // this.log(`Found ${key} ${cache.rooms[this.name].find[key]}`);
-    result = cache.rooms[this.name].find[key].result;
+Room.prototype.findPropertyFilter = function(findTarget, property, properties, opts = {}) {
+  const {filter, timeSpan = 0, inverse = false} = opts;
+  const cache = this._findPropertyFilterCacheOne(findTarget, property, properties, timeSpan, inverse);
+  if (cache.resolveTime !== Game.time) {
+    this._findPropertyFilterResolveOutdatedCacheOne(cache);
+  }
+  if (filter) {
+    return _.filter(cache.result, filter);
   } else {
-    const opts = Room.getPropertyFilterOptsObj(property, properties, without);
-    result = this.find(findTarget, opts);
-    cache.rooms[this.name].find[key] = {
+    return cache.result;
+  }
+};
+
+const localFindCache = {};
+
+Room.prototype._findPropertyFilterCacheTwo = function(findTarget, property, timeSpan) {
+  const key = `${this.name} ${findTarget} ${property}`;
+  if (!localFindCache[key] || localFindCache[key].time < Game.time + timeSpan) {
+    localFindCache[key] = {
       time: Game.time,
-      result: result,
+      result: _.groupBy(this.find(findTarget), property),
     };
   }
-  if (opts.filter) {
-    return _.filter(result, opts.filter);
-  } else {
-    return result;
+  return localFindCache[key];
+};
+
+Room.prototype._findPropertyFilterCacheOne = function(findTarget, property, properties, timeSpan, inverse) {
+  const key = `${this.name} ${findTarget} ${property} ${properties} ${inverse}`;
+  if (!localFindCache[key] || localFindCache[key].time < Game.time + timeSpan) {
+    const cacheTwoItem = this._findPropertyFilterCacheTwo(findTarget, property, timeSpan);
+    const cacheOneItem = localFindCache[key] = {
+      resolveTime: Game.time,
+      time: Game.time,
+      result: [],
+    };
+    for (const propertyValue of Object.keys(cacheTwoItem.result)) {
+      if (properties.includes(propertyValue) !== inverse) {
+        Array.prototype.push.apply(cacheOneItem.result, cacheTwoItem.result[propertyValue]);
+      }
+    }
   }
+  return localFindCache[key];
+};
+
+Room.prototype._findPropertyFilterResolveOutdatedCacheOne = function(cache) {
+  cache.result = cache.result.map((o) => Game.getObjectById(o.id)).filter((o) => o);
+  cache.resolveTime = Game.time;
 };
 
 Room.prototype.closestSpawn = function(target) {
   const pathLength = {};
-  const roomsMy = this.sortMyRoomsByLinearDistance(target);
+  const roomsMy = findMyRoomsSortByDistance(target);
 
   for (const room of roomsMy) {
     const route = Game.map.findRoute(room, target);
@@ -182,4 +186,14 @@ Room.test = function() {
       console.log('roomName unequal', i, original[i].roomName, path[i].roomName);
     }
   }
+};
+
+/**
+ * returns resources from structure
+ *
+ * @param {String} structure
+ * @return {Array} - Object.keys of store
+ */
+Room.prototype.getResourcesFrom = function(structure) {
+  return Object.keys(this[structure].store);
 };

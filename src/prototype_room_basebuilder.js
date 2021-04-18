@@ -1,5 +1,12 @@
 'use strict';
 
+/**
+ * posIsIn position is in array
+ *
+ * @param {object} pos - The position
+ * @param {array} array - Array of positions
+ * @return {boolean} - position is in array
+ */
 function posIsIn(pos, array) {
   if (!array) {
     return false;
@@ -8,7 +15,6 @@ function posIsIn(pos, array) {
   for (const posCheck of array) {
     // TODO when does this happen?
     if (posCheck === null) {
-      console.log('Pos is not in array', pos, posCheck, JSON.stringify(array));
       throw new Error();
       //      continue;
     }
@@ -19,43 +25,81 @@ function posIsIn(pos, array) {
   return false;
 }
 
-Room.prototype.destroyStructure = function(structure) {
-  if (structure.structureType === STRUCTURE_WALL) {
-    if (!structure.hits) {
-      return false;
-    }
-    if (!this.memory.walls) {
-      return false;
-    }
-    if (!this.memory.walls.finished) {
-      this.log('Wall setup not yet finished:' + structure.structureType + ' ' + JSON.stringify(structure.pos));
-      return false;
-    }
-    if (!structure.pos.inRamparts()) {
-      for (const layerId of Object.keys(this.memory.walls.layer)) {
-        const layer = this.memory.walls.layer[layerId];
-        for (const pos of layer) {
-          if (structure.pos.isEqualTo(pos.x, pos.y)) {
-            return false;
-          }
-        }
-      }
-    }
-    this.log('destroyStructure: wall not found in memory, destroying: ' + structure.structureType + ' ' + JSON.stringify(structure.pos));
-    structure.destroy();
-    return true;
+/**
+ * destroyStructureWall - Destroys wall structures
+ *
+ * @param {object} structure - The structure
+ * @return {boolean} If handled
+ **/
+Room.prototype.destroyStructureWall = function(structure) {
+  if (!structure.hits) {
+    return false;
   }
-  if (structure.structureType === STRUCTURE_ROAD) {
-    for (const pathName of Object.keys(this.getMemoryPaths())) {
-      for (const pos of this.getMemoryPath(pathName)) {
+  if (!this.memory.walls) {
+    return false;
+  }
+  if (!this.memory.walls.finished) {
+    return false;
+  }
+  if (!structure.pos.inRamparts()) {
+    for (const layerId of Object.keys(this.memory.walls.layer)) {
+      const layer = this.memory.walls.layer[layerId];
+      for (const pos of layer) {
         if (structure.pos.isEqualTo(pos.x, pos.y)) {
           return false;
         }
       }
     }
-    this.log('destroyStructure: not found in paths, destroying: ' + structure.structureType + ' ' + JSON.stringify(structure.pos) + ' ' + JSON.stringify(Object.keys(this.getMemoryPaths())));
-    structure.destroy();
-    return true;
+  }
+  structure.destroy();
+  return true;
+};
+
+Room.prototype.destroyStructureRoad = function(structure) {
+  for (const pathName of Object.keys(this.getMemoryPaths())) {
+    for (const pos of this.getMemoryPath(pathName)) {
+      if (structure.pos.isEqualTo(pos.x, pos.y)) {
+        return false;
+      }
+    }
+  }
+  structure.destroy();
+  return true;
+};
+
+Room.prototype.buildRampartsAroundSpawns = function() {
+  // Build ramparts around the spawn if wallThickness > 1
+  // TODO this is not jused for a long time and the spawn positions should
+  // be taken from `memory.positions.spawn`
+  if (config.layout.wallThickness > 1) {
+    const costMatrixBase = this.getMemoryCostMatrix();
+    const spawns = this.findMySpawns();
+
+    for (const spawn of spawns) {
+      for (let x = -1; x < 2; x++) {
+        for (let y = -1; y < 2; y++) {
+          if (spawn.pos.x + x >= 0 && spawn.pos.y + y >= 0 && spawn.pos.x + x < 50 && spawn.pos.y + y < 50) {
+            const pos = new RoomPosition(spawn.pos.x + x, spawn.pos.y + y, spawn.pos.roomName);
+            this.memory.walls.ramparts.push(pos);
+            costMatrixBase.set(pos.x, pos.y, 0);
+            const walls = pos.findInRangePropertyFilter(FIND_STRUCTURES, 0, 'structureType', [STRUCTURE_WALL]);
+            for (const wall of walls) {
+              wall.destroy();
+            }
+          }
+        }
+      }
+    }
+    this.setMemoryCostMatrix(costMatrixBase);
+  }
+};
+
+Room.prototype.destroyStructure = function(structure) {
+  if (structure.structureType === STRUCTURE_WALL) {
+    return this.destroyStructureWall(structure);
+  }
+  if (structure.structureType === STRUCTURE_ROAD) {
+    return this.destroyStructureRoad(structure);
   }
   if (structure.structureType === STRUCTURE_RAMPART) {
     return false;
@@ -64,22 +108,21 @@ Room.prototype.destroyStructure = function(structure) {
   if (posIsIn(structure.pos, this.memory.position.structure[structure.structureType])) {
     return false;
   }
-  const structures = this.findPropertyFilter(FIND_STRUCTURES, 'structureType', [structure.structureType]);
+
+  const structures = this.findStructuresOfStructureType(structure.structureType);
   let structuresMin = 0;
   if (structure.structureType === STRUCTURE_SPAWN) {
     structuresMin = 1;
   }
 
-  if (structures.length > structuresMin && (structure.my || Room.structureIsEmpty(structure))) {
-    this.log('Destroying: ' + structure.structureType + ' ' + JSON.stringify(structure.pos));
+  if (structures.length > structuresMin && (structure.my || Room.structureIsEmpty(structure)) && (structure.structureType !== STRUCTURE_STORAGE)) {
     structure.destroy();
     return true;
   }
-  this.log('Not destroying: ' + structure.structureType + ' ' + JSON.stringify(structure.pos) + ' ' + structures.length + ' ' + structuresMin);
   if (structure.structureType === STRUCTURE_SPAWN) {
     if (this.memory.misplacedSpawn) {
       if (this.storage && this.storage.store.energy > 20000) {
-        const planers = this.findPropertyFilter(FIND_MY_CREEPS, 'memory.role', ['planer']);
+        const planers = this.findMyCreepsOfRole('planer');
         if (planers.length > 3) {
           this.log('Destroying to rebuild spawn: ' + structure.structureType + ' ' + JSON.stringify(structure.pos));
           this.log('-----------------------------------------');
@@ -94,29 +137,10 @@ Room.prototype.destroyStructure = function(structure) {
       }
       return false;
     }
-    this.log('Set misplaced spawn');
+    this.log(`Spawn [${structure.pos.x}, ${structure.pos.y}] is misplaced, not in positions (prototype_room_basebuilder.destroyStructure)`); // eslint-disable-line max-len
     this.memory.misplacedSpawn = true;
 
-    // Build ramparts around the spawn if wallThickness > 1
-    if (config.layout.wallThickness > 1) {
-      const costMatrixBase = this.getMemoryCostMatrix();
-      const spawns = this.findPropertyFilter(FIND_MY_STRUCTURES, 'structureType', [STRUCTURE_SPAWN]);
-
-      for (const spawn of spawns) {
-        for (let x = -1; x < 2; x++) {
-          for (let y = -1; y < 2; y++) {
-            const pos = new RoomPosition(spawn.pos.x + x, spawn.pos.y + y, spawn.pos.roomName);
-            this.memory.walls.ramparts.push(pos);
-            costMatrixBase.set(pos.x, pos.y, 0);
-            const walls = pos.findInRangePropertyFilter(FIND_STRUCTURES, 0, 'structureType', [STRUCTURE_WALL]);
-            for (const wall of walls) {
-              wall.destroy();
-            }
-          }
-        }
-      }
-      this.setMemoryCostMatrix(costMatrixBase);
-    }
+    this.buildRampartsAroundSpawns();
   }
   return false;
 };
@@ -126,7 +150,8 @@ Room.prototype.checkPath = function() {
 
   const path = this.getMemoryPath('pathStart-harvester');
   if (!path) {
-    this.log('Skipping checkPath, routing not initialized');
+    this.log('Skipping checkPath, routing not initialized, try remove memory');
+    this.clearMemory();
     return false;
   }
   for (const pos of path) {
@@ -140,7 +165,7 @@ Room.prototype.checkPath = function() {
       if (structure.structureType === STRUCTURE_RAMPART) {
         continue;
       }
-      console.log('checkPath: ' + pos);
+      // console.log('checkPath: ' + pos);
       if (this.destroyStructure(structure)) {
         return true;
       }
@@ -150,7 +175,7 @@ Room.prototype.checkPath = function() {
 };
 
 Room.prototype.checkWrongStructure = function() {
-  //  this.log('checkWrongStructure: ' + this.memory.controllerLevel.checkWrongStructureInterval);
+  this.debugLog('baseBuilding', 'checkWrongStructure: ' + this.memory.controllerLevel.checkWrongStructureInterval);
   if (this.memory.underSiege && this.controller.level >= 3) {
     this.log('checkWrongStructure: underSiege');
     return false;
@@ -158,7 +183,7 @@ Room.prototype.checkWrongStructure = function() {
 
   // destroyStructure resets misplacedSpawn, so make sure we reach that point with the storage check
   if (this.memory.misplacedSpawn && (!this.storage || this.storage.store.energy < 20000)) {
-    this.log('checkWrongStructures skipped - misplacedSpawn');
+    this.debugLog('baseBuilding', 'checkWrongStructures skipped - misplacedSpawn');
     return false;
   }
 
@@ -167,7 +192,7 @@ Room.prototype.checkWrongStructure = function() {
   //  this.log('checkWrongStructure: controller.level < 6');
   //  return false;
   // }
-  const structures = this.findPropertyFilter(FIND_STRUCTURES, 'structureType', [STRUCTURE_RAMPART, STRUCTURE_CONTROLLER], true);
+  const structures = this.findPropertyFilter(FIND_STRUCTURES, 'structureType', [STRUCTURE_RAMPART, STRUCTURE_CONTROLLER], {inverse: true});
   for (const structure of structures) {
     if (this.destroyStructure(structure)) {
       return true;
@@ -239,30 +264,26 @@ Room.prototype.setupStructure = function(structure) {
 
     const returnCode = posObject.createConstructionSite(structure);
     if (returnCode === OK) {
-      this.log('Build: ' + structure + ' ' + JSON.stringify(posObject));
       return true;
     }
     if (returnCode === ERR_FULL) {
-      this.log('setup createConstrustionSite too many constructionSites');
+      this.debugLog('baseBuilding', 'setup createConstrustionSite too many constructionSites');
       return true;
     }
     if (returnCode === ERR_INVALID_TARGET) {
-      this.log('setup createConstrustionSite invalid target: ' + structure + ' ' + JSON.stringify(posObject));
       continue;
     }
     if (returnCode === ERR_RCL_NOT_ENOUGH) {
-      this.log(structure + ' ' + this.controller.level + ' ' + CONTROLLER_STRUCTURES[structure][this.controller.level]);
-      this.log('setup createConstrustionSite ERR_RCL_NOT_ENOUGH structure: ' + structure + ' ' + CONTROLLER_STRUCTURES[structure][this.controller.level] + ' ' + structures.length + ' ' + constructionsites.length);
+      this.debugLog('baseBuilding', structure + ' ' + this.controller.level + ' ' + CONTROLLER_STRUCTURES[structure][this.controller.level]);
+      this.debugLog('baseBuilding', 'setup createConstrustionSite ERR_RCL_NOT_ENOUGH structure: ' + structure + ' ' + CONTROLLER_STRUCTURES[structure][this.controller.level] + ' ' + structures.length + ' ' + constructionsites.length);
     }
 
-    this.log('setup createConstrustionSite returnCode: ' + returnCode + ' structure: ' + structure);
+    this.debugLog('baseBuilding', 'setup createConstrustionSite returnCode: ' + returnCode + ' structure: ' + structure);
   }
   return false;
 };
 
-Room.prototype.buildStructures = function() {
-  // TODO reduce noise
-  // this.log('buildStructures: ' + this.memory.controllerLevel.buildStructuresInterval);
+Room.prototype.checkBuildStructureValidity = function() {
   if (!this.memory.position) {
     this.log('No position buildStructures');
     this.setup();
@@ -270,11 +291,10 @@ Room.prototype.buildStructures = function() {
   }
 
   if (!this.memory.position.structure) {
-    this.log('No structure positions: ' + JSON.stringify(this.memory.position));
     return false;
   }
 
-  if (this.controller === null || !this.controller.my) {
+  if (!this.controller || this.controller === null || !this.controller.my) {
     this.log('No controller');
     return false;
   }
@@ -282,8 +302,15 @@ Room.prototype.buildStructures = function() {
   if (Object.keys(Game.constructionSites).length >= 100) {
     return false;
   }
+  return true;
+};
 
-  const constructionSites = this.findPropertyFilter(FIND_CONSTRUCTION_SITES, 'structureType', [STRUCTURE_RAMPART, STRUCTURE_WALL, STRUCTURE_ROAD], true);
+Room.prototype.buildStructures = function() {
+  if (!this.checkBuildStructureValidity()) {
+    return false;
+  }
+
+  const constructionSites = this.findPropertyFilter(FIND_CONSTRUCTION_SITES, 'structureType', [STRUCTURE_RAMPART, STRUCTURE_WALL, STRUCTURE_ROAD], {inverse: true});
   if (constructionSites.length > 0) {
     //    this.log('basebuilder.setup: Too many construction sites');
     return true;
@@ -323,13 +350,14 @@ Room.prototype.buildStructures = function() {
     return true;
   }
 
+  if (this.setupStructure(STRUCTURE_TERMINAL)) {
+    return true;
+  }
+
   if (this.setupStructure(STRUCTURE_LAB)) {
     return true;
   }
 
-  if (this.setupStructure(STRUCTURE_TERMINAL)) {
-    return true;
-  }
   if (this.setupStructure(STRUCTURE_NUKER)) {
     return true;
   }
@@ -352,8 +380,8 @@ Room.prototype.checkBlockers = function() {
     return false;
   }
   //  this.log('checkBlockers: ' + this.memory.controllerLevel.checkBlockersInterval + ' ' + this.controller.level + ' ' + this.memory.walls);
-  if (this.controller.level >= 2 && (!this.memory.walls || !this.memory.walls.layer)) {
-    this.log('checkBlockers: reset walls');
+  if (!this.memory.walls || !this.memory.walls.layer) {
+    this.debugLog('baseBuilding', 'checkBlockers: reset walls');
     this.memory.walls = {
       exit_i: 0,
       ramparts: [],

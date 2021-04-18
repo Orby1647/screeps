@@ -36,11 +36,13 @@ Room.prototype.getRoomMemorySegmentKey = function(object) {
  * Deletes room memory, all room cache objects from memory segments and invalidates global cache
  */
 Room.prototype.clearMemory = function() {
-  this.checkSegment();
-  const roomKeyPrefix = this.getRoomMemorySegmentKey('');
-  for (const key of brain.getSegmentKeys(this.memory.segment)) {
-    if (key.startsWith(roomKeyPrefix)) {
-      brain.removeSegmentObject(this.memory.segment, roomKeyPrefix);
+  if (config.memory.segmentsEnabled) {
+    this.checkSegment();
+    const roomKeyPrefix = this.getRoomMemorySegmentKey('');
+    for (const key of brain.getSegmentKeys(this.memory.segment)) {
+      if (key.startsWith(roomKeyPrefix)) {
+        brain.removeSegmentObject(this.memory.segment, roomKeyPrefix);
+      }
     }
   }
   this.memory = {
@@ -55,8 +57,7 @@ Room.prototype.clearMemory = function() {
  * @return {CostMatrix|undefined}
  */
 Room.prototype.getMemoryCostMatrix = function() {
-  this.checkSegment();
-  return brain.getSegmentObject(this.memory.segment, this.getRoomMemorySegmentKey('costmatrix'));
+  return PathFinder.CostMatrix.deserialize(this.memory.costMatrix);
 };
 
 /**
@@ -65,8 +66,12 @@ Room.prototype.getMemoryCostMatrix = function() {
  * @param {Object} costMatrix - the costMatrix to save
  */
 Room.prototype.setMemoryCostMatrix = function(costMatrix) {
-  this.checkSegment();
-  brain.setSegmentObject(this.memory.segment, this.getRoomMemorySegmentKey('costmatrix'), costMatrix, 'costmatrix');
+  if (config.memory.segmentsEnabled) {
+    this.checkSegment();
+    brain.setSegmentObject(this.memory.segment, this.getRoomMemorySegmentKey('costmatrix'), costMatrix, 'costmatrix');
+  } else {
+    this.memory.costMatrix = costMatrix.serialize();
+  }
 };
 
 Room.prototype.checkCache = function() {
@@ -82,6 +87,23 @@ Room.prototype.checkCache = function() {
   }
 };
 
+const pathMissingInCache = function(room, item) {
+  let path;
+  try {
+    path = Room.stringToPath(room.memory.routing[item].path);
+  } catch (e) {
+    path = room.memory.routing[item].path;
+    room.memory.routing[item].path = Room.pathToString(path);
+  }
+
+  cache.rooms[room.name].routing[item] = {
+    path: path,
+    created: room.memory.routing[item].created,
+    fixed: room.memory.routing[item].fixed,
+    name: room.memory.routing[item].name,
+  };
+};
+
 /**
  * Returns all paths for this room from cache. Checks if cache and memory
  * paths fit, otherwise populate cache.
@@ -94,23 +116,21 @@ Room.prototype.getMemoryPaths = function() {
   const cacheKeys = Object.keys(cache.rooms[this.name].routing).sort();
   const diff = _.difference(memoryKeys, cacheKeys);
   for (const item of diff) {
-    //    this.log(`getPaths ${item} missing in cache`);
-    let path;
-    try {
-      path = Room.stringToPath(this.memory.routing[item].path);
-    } catch (e) {
-      path = this.memory.routing[item].path;
-      this.memory.routing[item].path = Room.pathToString(path);
-    }
-
-    cache.rooms[this.name].routing[item] = {
-      path: path,
-      created: this.memory.routing[item].created,
-      fixed: this.memory.routing[item].fixed,
-      name: this.memory.routing[item].name,
-    };
+    pathMissingInCache(this, item);
   }
   return cache.rooms[this.name].routing;
+};
+
+Room.prototype.getMemoryPathsSet = function() {
+  this.checkCache();
+  const mem = cache.rooms[this.name].pathSet = cache.rooms[this.name].pathSet || {};
+  for (const pathName of Object.keys(this.getMemoryPaths())) {
+    const path = this.getMemoryPath(pathName);
+    for (const pos of path) {
+      mem[`${pos.x} ${pos.y}`] = true;
+    }
+  }
+  return mem;
 };
 
 /**
@@ -132,20 +152,7 @@ Room.prototype.getMemoryPath = function(name) {
   }
 
   if (this.memory.routing[name] && isValid(this.memory.routing[name])) {
-    //    this.log(`getPath ${name} missing in cache`);
-    let path;
-    try {
-      path = Room.stringToPath(this.memory.routing[name].path);
-    } catch (e) {
-      path = this.memory.routing[name].path;
-      this.memory.routing[name].path = Room.pathToString(path);
-    }
-    cache.rooms[this.name].routing[name] = {
-      path: path,
-      created: this.memory.routing[name].created,
-      fixed: this.memory.routing[name].fixed,
-      name: this.memory.routing[name].name,
-    };
+    pathMissingInCache(this, name);
     return cache.rooms[this.name].routing[name].path;
   }
   return false;
@@ -158,6 +165,7 @@ Room.prototype.deleteMemoryPaths = function() {
   this.checkCache();
   cache.rooms[this.name].routing = {};
   delete this.memory.routing;
+  cache.rooms[this.name].pathSet = {};
 };
 
 /**
@@ -169,6 +177,7 @@ Room.prototype.deleteMemoryPath = function(name) {
   this.checkCache();
   delete cache.rooms[this.name].routing[name];
   delete this.memory.routing[name];
+  cache.rooms[this.name].pathSet = {};
 };
 
 /**
@@ -178,9 +187,13 @@ Room.prototype.deleteMemoryPath = function(name) {
  * @param {String} name - the name of the path
  * @param {Array} path - the path itself
  * @param {boolean} fixed - Flag to define if the path should be stored in memory
+ * @param {boolean} perturb - Flag to define if the path should be perturbed
  */
-Room.prototype.setMemoryPath = function(name, path, fixed) {
+Room.prototype.setMemoryPath = function(name, path, fixed, perturb = false) {
   this.checkCache();
+  if (perturb) {
+    path = Room.perturbPath(path);
+  }
   const data = {
     path: path,
     created: Game.time,
@@ -197,6 +210,7 @@ Room.prototype.setMemoryPath = function(name, path, fixed) {
     };
     this.memory.routing[name] = memoryData;
   }
+  cache.rooms[this.name].pathSet = {};
 };
 
 /**
@@ -233,4 +247,46 @@ Room.prototype.getPositions = function(filter) {
   }
 
   return positions;
+};
+
+/**
+ * Bends orthogonal path segments into diagonal zigzags
+ *
+ * @param {Array} path - the path to perturb
+ * @return {Array} changed - the perturbed path
+ */
+Room.perturbPath = function(path) {
+  if (!path) {
+    return path;
+  }
+  let skip = false;
+  let prevDir = null;
+  let prevDirOffset = 2;
+  for (let pathIndex = 0; pathIndex < path.length - 1; pathIndex++) {
+    const posPathObject = path[pathIndex];
+    const posPathNext = path[pathIndex + 1];
+    const dirNext = posPathObject.getDirectionTo(posPathNext);
+    if (skip) {
+      // don't perturb if we did on the last step
+      skip = false;
+      prevDir = dirNext;
+      continue;
+    }
+    if (prevDir !== dirNext || dirNext % 2 === 0) {
+      // don't perturb corners or diagonals
+      prevDir = dirNext;
+      continue;
+    }
+    for (let dirOffset = -prevDirOffset; dirOffset !== prevDirOffset * 3; dirOffset += prevDirOffset * 2) {
+      const offsetPosition = posPathObject.getAdjacentPosition((dirNext + dirOffset + 7) % 8 + 1);
+      if (offsetPosition.lookFor(LOOK_TERRAIN)[0] === 'plain' && !offsetPosition.inPositions() && !offsetPosition.isBorder(1)) {
+        path[pathIndex] = offsetPosition;
+        prevDirOffset = dirOffset;
+        skip = true;
+        break;
+      }
+    }
+    prevDir = dirNext;
+  }
+  return path;
 };
